@@ -1,7 +1,7 @@
 {
-  "name": "forex-trading-dashboard",
+  "name": "forex-backend-api",
   "version": "2.0.0",
-  "description": "Multi-timeframe forex day trading assistant with LIVE AlphaVantage data",
+  "description": "Backend API for Forex Trading Dashboard - Optimized for deployment",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -10,10 +10,9 @@
   },
   "keywords": [
     "forex",
-    "trading",
+    "api",
     "alphavantage",
-    "technical-analysis",
-    "day-trading"
+    "trading"
   ],
   "author": "",
   "license": "MIT",
