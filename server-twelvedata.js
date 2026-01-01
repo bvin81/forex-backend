@@ -9,7 +9,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const API_KEY = process.env.ALPHAVANTAGE_API_KEY;
+const API_KEY = process.env.TWELVEDATA_API_KEY;
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const CACHE_TTL = parseInt(process.env.CACHE_TTL) || 5 * 60 * 1000; // 5 minutes
@@ -53,20 +53,23 @@ class Cache {
 
 const cache = new Cache(CACHE_TTL);
 
-// ============= HELPER FUNCTIONS =============
-function alphaUrl(pair, interval) {
-  const base = pair.slice(0, 3);
-  const quote = pair.slice(3, 6);
-
-  if (interval === "daily") {
-    return `https://www.alphavantage.co/query?function=FX_DAILY&from_symbol=${base}&to_symbol=${quote}&apikey=${API_KEY}`;
-  }
-
-  return `https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol=${base}&to_symbol=${quote}&interval=${interval}&apikey=${API_KEY}`;
+// ============= TWELVE DATA API HELPER =============
+function twelveDataUrl(pair, interval) {
+  const symbol = `${pair.slice(0, 3)}/${pair.slice(3, 6)}`;
+  
+  const intervalMap = {
+    'daily': '1day',
+    '60min': '1h',
+    '15min': '15min'
+  };
+  
+  const mappedInterval = intervalMap[interval] || interval;
+  
+  return `https://api.twelvedata.com/time_series?symbol=${symbol}&interval=${mappedInterval}&outputsize=100&apikey=${API_KEY}`;
 }
 
-async function fetchCandles(url) {
-  const cacheKey = url;
+async function fetchCandles(url, pair, interval) {
+  const cacheKey = `${pair}-${interval}`;
   
   // Check cache first
   const cached = cache.get(cacheKey);
@@ -83,34 +86,36 @@ async function fetchCandles(url) {
 
     const data = await res.json();
 
-    if (data.Note) {
+    // Check for Twelve Data errors
+    if (data.status === 'error') {
+      console.error('[TWELVE DATA ERROR]', data.message);
+      throw new Error(`API_ERROR: ${data.message}`);
+    }
+
+    if (data.code === 429) {
       throw new Error('API_LIMIT_REACHED');
     }
 
-    if (data["Error Message"]) {
-      throw new Error(`API_ERROR: ${data["Error Message"]}`);
-    }
-
-    const key = Object.keys(data).find(k => k.includes("Time Series"));
-    if (!key) {
+    if (!data.values || !Array.isArray(data.values)) {
+      console.error('[NO VALUES] Response:', JSON.stringify(data).substring(0, 300));
       throw new Error('NO_TIME_SERIES_DATA');
     }
 
-    const series = data[key];
-
-    const candles = Object.entries(series).map(([time, ohlc]) => ({
-      time,
-      open: parseFloat(ohlc["1. open"]),
-      high: parseFloat(ohlc["2. high"]),
-      low: parseFloat(ohlc["3. low"]),
-      close: parseFloat(ohlc["4. close"])
+    // Convert Twelve Data format to our format
+    const candles = data.values.map(item => ({
+      time: item.datetime,
+      open: parseFloat(item.open),
+      high: parseFloat(item.high),
+      low: parseFloat(item.low),
+      close: parseFloat(item.close)
     }));
 
+    // Twelve Data returns newest first, reverse to get oldest first
     const result = candles.reverse();
     
     // Cache the result
     cache.set(cacheKey, result);
-    console.log(`[API CALL] ${url}`);
+    console.log(`[API CALL] Twelve Data - ${pair} ${interval}`);
     
     return result;
   } catch (error) {
@@ -170,8 +175,8 @@ app.get("/api/daily", async (req, res) => {
       return res.json({ candles });
     }
     
-    const url = alphaUrl(pair, "daily");
-    const candles = await fetchCandles(url);
+    const url = twelveDataUrl(pair, 'daily');
+    const candles = await fetchCandles(url, pair, 'daily');
     
     if (!candles) {
       throw new Error('NO_DATA');
@@ -182,7 +187,7 @@ app.get("/api/daily", async (req, res) => {
     if (error.message === 'API_LIMIT') {
       return res.status(429).json({
         error: 'API_LIMIT_REACHED',
-        message: 'AlphaVantage API limit reached. Please try again later or enable DEMO_MODE.'
+        message: 'Twelve Data API limit reached. Please try again later or enable DEMO_MODE.'
       });
     }
     
@@ -211,8 +216,8 @@ app.get("/api/h1", async (req, res) => {
       return res.json({ candles });
     }
     
-    const url = alphaUrl(pair, "60min");
-    const candles = await fetchCandles(url);
+    const url = twelveDataUrl(pair, '60min');
+    const candles = await fetchCandles(url, pair, '60min');
     
     if (!candles) {
       throw new Error('NO_DATA');
@@ -223,7 +228,7 @@ app.get("/api/h1", async (req, res) => {
     if (error.message === 'API_LIMIT') {
       return res.status(429).json({
         error: 'API_LIMIT_REACHED',
-        message: 'AlphaVantage API limit reached. Please try again later or enable DEMO_MODE.'
+        message: 'Twelve Data API limit reached. Please try again later or enable DEMO_MODE.'
       });
     }
     
@@ -252,8 +257,8 @@ app.get("/api/m15", async (req, res) => {
       return res.json({ candles });
     }
     
-    const url = alphaUrl(pair, "15min");
-    const candles = await fetchCandles(url);
+    const url = twelveDataUrl(pair, '15min');
+    const candles = await fetchCandles(url, pair, '15min');
     
     if (!candles) {
       throw new Error('NO_DATA');
@@ -264,7 +269,7 @@ app.get("/api/m15", async (req, res) => {
     if (error.message === 'API_LIMIT') {
       return res.status(429).json({
         error: 'API_LIMIT_REACHED',
-        message: 'AlphaVantage API limit reached. Please try again later or enable DEMO_MODE.'
+        message: 'Twelve Data API limit reached. Please try again later or enable DEMO_MODE.'
       });
     }
     
@@ -280,6 +285,7 @@ app.get("/api/m15", async (req, res) => {
 app.get("/api/health", (req, res) => {
   res.json({
     status: 'OK',
+    provider: 'Twelve Data',
     mode: DEMO_MODE ? 'DEMO' : 'LIVE',
     cache_size: cache.size(),
     uptime: process.uptime()
@@ -300,12 +306,14 @@ app.listen(PORT, HOST, () => {
   console.log(`
 ╔════════════════════════════════════════════╗
 ║   FOREX TRADING BACKEND - READY           ║
+║   Provider: Twelve Data API               ║
 ╚════════════════════════════════════════════╝
   
   🌐 Server:     http://${HOST}:${PORT}
-  📊 Mode:       ${DEMO_MODE ? '⚠️  DEMO (Generated Data)' : '✅ LIVE (AlphaVantage)'}
+  📊 Mode:       ${DEMO_MODE ? '⚠️  DEMO (Generated Data)' : '✅ LIVE (Twelve Data)'}
   💾 Cache TTL:  ${CACHE_TTL / 1000}s
   🔑 API Key:    ${API_KEY ? '✅ Loaded' : '❌ Missing'}
+  📡 Provider:   Twelve Data (800 calls/day FREE)
   
   Endpoints:
     GET  /api/daily?pair=EURUSD
